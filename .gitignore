@@ -1,0 +1,19 @@
+# Python environment & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv/
+venv/
+ENV/
+
+# Playwright browser binaries (The "playwright install" folders)
+ms-playwright/
+
+# Output files
+*.csv
+*.log
+
+# IDE settings
+.vscode/
+.idea/
