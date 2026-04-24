@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import List, Dict
 from playwright.sync_api import sync_playwright, Page
 from utils import DataConverter
@@ -16,11 +17,29 @@ class YouTubeScraper:
         except Exception: pass
 
     def _click_popular_tab(self, page: Page):
-        popular_tab = page.get_by_role("tab", name="Popular").first
-        popular_tab.wait_for(state="visible", timeout=10000)
-        popular_tab.click(force=True)
-        page.get_by_role("tab", name="Popular", selected=True).wait_for(timeout=5000)
-        page.wait_for_timeout(2000)
+        try:
+            logging.info("  ∟ Waiting for page to hydrate...")
+            # Wait for at least one video to load so we know the UI is fully ready
+            page.wait_for_selector('ytd-rich-item-renderer', state='visible', timeout=15000)
+            
+            logging.info("  ∟ Switching to 'Popular' tab...")
+            
+            # Scroll to the absolute top to ensure tabs aren't hidden under the sticky search header
+            page.evaluate("window.scrollTo(0, 0)")
+            page.wait_for_timeout(1000)
+            
+            # The :visible flag prevents grabbing the hidden mobile sidebar tab
+            popular_tab = page.locator('button[aria-label="Popular"]:visible, yt-chip-cloud-chip-renderer:has-text("Popular"):visible').first
+            popular_tab.wait_for(state="visible", timeout=5000)
+            
+            # USE JAVASCRIPT CLICK: Bypasses Playwright's strict viewport and overlap checks
+            popular_tab.evaluate("node => node.click()")
+            
+            # Wait 3 seconds for the grid to refresh with the new sorted videos
+            page.wait_for_timeout(3000)
+            
+        except Exception as e:
+            logging.warning(f"  ⚠️ Could not click 'Popular' tab (using default sort). Error: {e}")
 
     def _scroll_to_load(self, page: Page, max_scrolls: int):
         selector = 'ytd-rich-item-renderer a#video-title-link'
@@ -28,7 +47,9 @@ class YouTubeScraper:
         retries = 0
         
         for i in range(max_scrolls):
-            page.keyboard.press("End")
+            # --- JAVASCRIPT SCROLL UPDATE ---
+            # Bypasses Playwright's need to click the <body> to focus the keyboard
+            page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
             page.wait_for_timeout(2500)
             
             current_count = page.locator(selector).count()
@@ -37,7 +58,7 @@ class YouTubeScraper:
             if current_count == last_count:
                 retries += 1
                 if retries >= 3:
-                    logging.info("End of list reached after 3 consecutive scrolls with no new videos.")
+                    logging.info("  ∟ End of list reached after 3 consecutive scrolls with no new videos.")
                     break
             else:
                 retries = 0
@@ -58,24 +79,25 @@ class YouTubeScraper:
             self._click_popular_tab(page)
             self._scroll_to_load(page, max_scrolls)
             
-            # --- JAVASCRIPT LOGIC UPDATED HERE ---
             raw_data = page.evaluate("""
                 () => [...document.querySelectorAll('ytd-rich-item-renderer')].map(vid => {
                     const titleElem = vid.querySelector('a#video-title-link');
-                    if (!titleElem) return null; // Skip if it's not a real video card
+                    if (!titleElem) return null;
 
                     const meta = vid.querySelectorAll('#metadata-line > span.inline-metadata-item');
+                    
+                    const durationElem = vid.querySelector('ytd-thumbnail-overlay-time-status-renderer .ytBadgeShapeText, ytd-thumbnail-overlay-time-status-renderer #text');
+                    const duration = durationElem ? durationElem.innerText.trim() : 'Unknown';
                     
                     return {
                         title: titleElem.getAttribute('title'),
                         href: titleElem.getAttribute('href'),
-                        // Check if meta elements exist before accessing them
+                        duration: duration,
                         views: meta.length > 0 ? meta[0].innerText : '0 views',
-                        date: meta.length > 1 ? meta[1].innerText : 'Unknown' // FIX: Return 'Unknown' instead of a fake date
+                        date: meta.length > 1 ? meta[1].innerText : 'Unknown'
                     };
-                }).filter(v => v !== null && v.title) // Filter out nulls and empty titles
+                }).filter(v => v !== null && v.title)
             """)
-            # --- END OF JAVASCRIPT UPDATE ---
 
             browser.close()
             return self._process_raw_data(raw_data)
@@ -91,9 +113,12 @@ class YouTubeScraper:
 
             views_int = DataConverter.parse_view_count(item['views'])
             
-            # If the date is 'Unknown', parse_age_to_days will default to 1,
-            # but we can also set the velocity to 0 to push it to the bottom.
             days_int = DataConverter.parse_age_to_days(item['date'])
+
+            # --- NEW DURATION LOGIC ---
+            duration_seconds = DataConverter.parse_duration_to_seconds(item['duration'])
+            duration_formatted = DataConverter.format_seconds_to_hhmmss(duration_seconds)
+
             views_per_day = 0
             if days_int > 0 and item['date'] != 'Unknown':
                 views_per_day = round(views_int / days_int)
@@ -101,10 +126,13 @@ class YouTubeScraper:
             processed.append({
                 'Title': item['title'],
                 'URL': url,
+                'Duration (HH:MM:SS)': duration_formatted,
+                'Duration (seconds)': duration_seconds,
+                'Duration': item['duration'],
                 'View Count': item['views'],
                 'Date/Year': item['date'],
                 'Views (int)': views_int,
-                'Age (days)': days_int if item['date'] != 'Unknown' else 'N/A', # Show N/A for unknown dates
+                'Age (days)': days_int if item['date'] != 'Unknown' else 'N/A', 
                 'Views Per Day (Avg)': views_per_day
             })
         return processed

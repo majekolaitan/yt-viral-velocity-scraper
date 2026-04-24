@@ -1,3 +1,4 @@
+from datetime import timedelta
 import re
 
 class DataConverter:
@@ -40,3 +41,31 @@ class DataConverter:
         if 'month' in age_str: return num * 30
         if 'year' in age_str: return num * 365
         return 1
+    
+    # --- NEW FUNCTION TO PARSE DURATION ---
+    @staticmethod
+    def parse_duration_to_seconds(duration_str: str) -> int:
+        """Converts MM:SS or HH:MM:SS to total seconds."""
+        if not duration_str or not isinstance(duration_str, str):
+            return 0
+            
+        parts = duration_str.split(':')
+        try:
+            # Safely convert parts to integers, defaulting to 0 if conversion fails
+            time_parts = [int(p) for p in parts]
+        except ValueError:
+            return 0 # Handles cases like 'LIVE' or other non-numeric strings
+        
+        total_seconds = 0
+        if len(time_parts) == 2: # MM:SS
+            total_seconds = time_parts[0] * 60 + time_parts[1]
+        elif len(time_parts) == 3: # HH:MM:SS
+            total_seconds = time_parts[0] * 3600 + time_parts[1] * 60 + time_parts[2]
+            
+        return total_seconds
+
+    # --- NEW FUNCTION TO FORMAT SECONDS ---
+    @staticmethod
+    def format_seconds_to_hhmmss(seconds: int) -> str:
+        """Formats total seconds into a consistent HH:MM:SS string."""
+        return str(timedelta(seconds=seconds))
